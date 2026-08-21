@@ -1,0 +1,355 @@
+# gslint - Gosu Linter
+
+Source-level static analysis for the [Gosu](https://gosu-lang.github.io/) programming language. Parses `.gs`, `.gsx`, `.gst`, and `.gsp` source files using the Gosu compiler's own AST API (`gw.lang.parser.*`) and reports violations in Text, JSON, SARIF.
+
+- Tested Gosu versions: 1.14.16, 1.14.29, 1.15.7, 1.17.13, 1.18.5, **1.18.7**, 1.18.8
+- Gosu has been a stable language for over a decade so there should be flexibility with running a linter built for **1.18.7** against files designed for a previous version
+- Targets Java 11 bytecode for gosu-core parity; usable on JDK 11, 17, 21; peeked at upcoming 1.20.0-SNAPSHOT (JDK 25)
+
+> **Rule philosophy:** This project ships a curated set of language-level rules. It serves as a foundational component for larger code quality efforts and will not reach feature parity with general-purpose linters. If you're building a Gosu framework or application platform, write custom rules targeting your domain APIs.
+
+## How It Works
+
+The linter depends directly on `gosu-core`: `GosuClassParser.parseFull()` produces an `IGosuClass` AST that rules walk.
+The focus is on the public `gw.lang.*` interface hierarchy, with occasional dips into `gw.internal.lang.*`.
+
+## ErrorType and Type Resolution
+
+When the Gosu compiler cannot resolve a referenced type because its JAR is not on the classpath, it substitutes `gw.lang.reflect.IErrorType`.
+Rules that inspect types will see `ErrorType` instead of the real type, which means type-dependent rules (e.g., `raw-type`, `res00g-*`) may silently miss violations or produce lower-confidence results.
+
+### Specifying source roots: `--src-root`
+
+Specify the source root directory where Gosu files are located. This is required for the Gosu runtime to properly resolve types and package structures:
+
+```bash
+java -jar gslint.jar --src-root src
+```
+
+```bash
+java -jar gslint.jar --include "src/**/*.gs" --src-root src
+```
+
+For multiple source roots (e.g., separate source and test directories), specify `--src-root` multiple times:
+
+```bash
+java -jar gslint.jar --includes "src/**/*.gs","test/**/*.gs" --src-root src --src-root test
+```
+
+### Include Pattern and Source Root Alignment
+
+`--include` and `--src-root` serve different purposes and must be aligned:
+
+- **`--include`** - which files to analyze (glob patterns, file paths, directories)
+- **`--src-root`** - where Gosu should look for type information and package structure
+
+**Files matched by your include pattern should live under the `--src-root` directories you specify.** If they don't, the Gosu runtime cannot resolve types correctly, and rules depending on type information will produce `ErrorType` results and lower-confidence findings.
+
+**Correct usage:**
+```bash
+# Scan files under src/; init-src-root points to src/
+java -jar gslint.jar --include "src/**/*.gs" --init-src-root src
+
+# Scan both src/ and test/; each with its own root
+java -jar gslint.jar --include "src/**/*.gs" --include "test/**/*.gs" \
+  --init-src-root src --init-src-root test
+```
+
+**Incorrect usage (misaligned):**
+```bash
+# ❌ Scans everything, but init-src-root only points to src/
+# Files outside src/ won't resolve types correctly
+java -jar gslint.jar --include "**/*.gs" --init-src-root src
+```
+
+When include patterns and roots are misaligned, type resolution will be incomplete, and you'll see `[⚠ type-incomplete]` warnings in the output.
+
+### Providing dependency JARs: `--additional-jars-file` (strongly recommended)
+
+Pass a plain-text file with one relative or absolute JAR path per line (or semicolons between paths on the same line):
+
+```
+lib/foo.jar
+lib/bar.jar
+```
+
+> **Local Maven repositories:** It's not recommended to generate the file by including all JAR files from a local Maven repository. Local repositories may track multiple versions of the same JAR. You should determine the runtime dependencies for your project and only include those JARs.
+
+The linter reports a resolution confidence summary at the end of each run:
+
+```
+-- Resolution Confidence --
+Fully Resolved:   42 violations ( 87%)
+Type-Incomplete:   6 violations ( 13%)
+Tip: Fix imports & re-run for complete analysis
+```
+
+Individual violations are flagged with `[⚠ type-incomplete]` in text output and `"fullyResolved": false` in JSON.
+
+**Recommendation:** Treat type-incomplete violations as lower-confidence findings.
+
+## Rule Reference
+
+See [RULES.md](RULES.md) for a comprehensive reference of all 150+ linting rules. For complexity metrics (cyclomatic and cognitive complexity), see [COMPLEXITY.md](COMPLEXITY.md).
+
+## Command-Line Usage
+
+```bash
+# Common case: analyze a source directory recursively
+java -jar gslint.jar --include src
+
+# Common case: pass a glob directly (quote to prevent shell expansion)
+java -jar gslint.jar --include "src/**/*.gs"
+
+# Single file
+java -jar gslint.jar --include src/foo/Bar.gs
+
+# Mixed: multiple include patterns and a single file
+java -jar gslint.jar --include "src/main/**/*.gs" --include "src/integration/**/*.gs" --include src/Util.gs
+
+java -jar gslint.jar --include "/c/tmp/src/com.example/**/*.gs" --src-root /c/tmp/src
+```
+
+### Path separators in include patterns (Windows)
+
+Use **forward slashes** (`/`) in all patterns. They work identically on Windows, Linux, and macOS, making patterns portable across CI environments without modification.
+
+```bash
+# Recommended - portable everywhere
+java -jar gslint.jar --include "src/**/*.gs" --src-root src
+
+# Also accepted on Windows, but not portable to Unix CI and not religiously tested
+java -jar gslint.jar --include "src\**\*.gs" --src-root src
+```
+
+### Running without the uber JAR
+
+When you want to avoid the uber JAR - for example, when embedding the linter in a larger build that already has gosu-core on the classpath - use `-cp` to assemble the classpath yourself:
+
+```bash
+# With your own dependency JARs on the classpath for full type resolution
+java -cp "gslint.jar:gosu-core-1.18.7.jar:gosu-core-api-1.18.7.jar:<other jars>:lib/myapp.jar" org.gslint.Main --include src --src-root src
+
+# Windows (semicolon separators)
+java -cp "gslint.jar;gosu-core-1.18.7.jar;gosu-core-api-1.18.7.jar;<other jars>;lib/myapp.jar" org.gslint.Main --include src --src-root src
+```
+
+### Rule selection
+
+```bash
+# Run only specific rules
+java -jar gslint.jar --include src --rules empty-catch,dead-assignment
+
+# Run all rules except the listed ones
+java -jar gslint.jar --include src --skip-rules complexity
+
+# Mix built-in and custom rules
+java -jar gslint.jar --include src --rules "empty-catch,com.example.MyRule,dead-assignment"
+```
+
+### Output formats
+
+```bash
+# Default text output
+java -jar gslint.jar --include src
+
+# JSON - suitable for CI result parsing
+java -jar gslint.jar --include src --format json
+
+# SARIF - for GitHub Code Scanning, VS Code, and other SARIF consumers
+java -jar gslint.jar --include src --format sarif
+```
+
+The linter's output goes to `stdout`, so pipe it into a file (`... > report.txt`) or into another processor such as `jq` when you need structured filtering or CI artifact capture.
+
+### Progress tracking
+
+For long-running analyses, many sub-commands support `--show-progress` to track analysis in real time. Progress is printed to `stderr` every ~10% of files and a final summary.
+
+```bash
+# Enable progress output (useful for CI and interactive runs)
+java -jar gslint.jar --include src --show-progress
+
+# Combine with JSON output - progress goes to stderr, JSON to stdout
+java -jar gslint.jar --include src --format json --show-progress > report.json
+```
+
+Progress output is sent to `stderr` so it does not interfere with structured output (`--format json` or `--format sarif`) piped to `stdout`.
+
+### Rule configuration via command line
+
+```bash
+# Single rule
+java -jar gslint.jar --include src --rule-config complexity:maxComplexity=8
+
+# Multiple rules: semicolons separate rules, commas separate key=value pairs
+java -jar gslint.jar --include src \
+  --rule-config "empty-catch:allowCommentedCatch=true;too-many-args:maxArgs=4;too-many-returns:maxReturns=4"
+
+# Multiple --rule-config flags (equivalent to the semicolon form)
+java -jar gslint.jar --include src \
+  --rule-config complex-boolean:maxOperators=2 \
+  --rule-config empty-catch:allowCommentedCatch=true
+  
+# Single rule with --skip-rules (other rules still run)
+java -jar gslint.jar --include src --skip-rules "complex*"
+```
+
+### Rule configuration via properties file
+
+```bash
+cat <<'EOF' > /tmp/lint.properties
+# this is a comment
+rule.empty-catch.allowCommentedCatch=true
+rule.too-many-args.maxArgs=4
+rule.too-many-returns.maxReturns=4
+rule.complex-boolean.maxOperators=2
+rule.excessive-newlines.maxBlankLines=2
+rule.too-many-throws.maxThrows=2
+EOF
+java -jar gslint.jar --src-root src --config lint.properties
+```
+
+### Custom severity
+
+Each rule violation can carry a custom severity label. Severity values are free-form strings - define whatever scheme fits your project (e.g., `critical/high/low`, `blocking/warning/info`, `P0/P1/P2`).
+
+**Priority:** CLI `--rule-config` overrides properties file; properties file overrides the `@RuleToken` annotation default on a custom rule.
+
+**Via command line:**
+
+```bash
+# Mark a single rule's violations as "critical"
+java -jar gslint.jar --src-root src --rule-config complex-boolean:severity=critical
+
+# Multiple rules with different severities (combine with other config keys freely)
+java -jar gslint.jar --src-root src \
+  --rule-config "empty-catch:severity=blocking;dead-assignment:severity=warning;print-statement:severity=info"
+
+# Severity and a threshold in the same rule-config entry
+java -jar gslint.jar --src-root src \
+  --rule-config "complex-boolean:maxOperators=2,severity=critical"
+```
+
+**Via properties file:**
+
+```properties
+# lint.properties
+
+# Per-rule severity overrides
+rule.empty-catch.severity=blocking
+rule.dead-assignment.severity=warning
+rule.print-statement.severity=info
+
+# Skip rules - comma-separated tokens; globs are supported
+# Merged with --skip-rules before rule resolution.
+# Ignored when --rules is active on the CLI (explicit include-list takes precedence).
+skip-rules=print-statement,manifold*
+```
+
+```bash
+java -jar gslint.jar --config lint.properties
+```
+
+Severity is surfaced in all three output formats:
+
+- **Text:** `[severity: critical]` appended to the violation line
+- **JSON:** `"severity": "critical"` field on each violation object
+- **SARIF:** the severity value is used as the SARIF `level` field
+
+**Via `@RuleToken` (for custom rules):** Set a compile-time default severity in the annotation. It applies to every violation from that rule and can be overridden at runtime via `--rule-config` or a properties file.
+
+```java
+@RuleToken(value = "my-rule", displayName = "My Rule", severity = "high")
+public class MyRule extends BaseRule<MyRule.Violation> { ... }
+```
+
+### Type resolution via classpath style file (`:` for Linux, `;` for Windows -or- newline separated)
+
+```bash
+cat <<'EOF' > /tmp/dependencies.txt
+libs/jackson-databind-0.0.0.jar
+libs/jackson-core-0.0.0.jar
+libs/jackson-annotations-0.0.0.jar
+EOF
+java -jar gslint.jar --additional-jars-file /tmp/dependencies.txt
+```
+
+```bash
+cat <<'EOF' > /tmp/dependencies.txt
+# this is a comment
+libs/jackson-databind-0.0.0.jar
+libs/jackson-core-0.0.0.jar
+libs/jackson-annotations-0.0.0.jar
+// this is a comment too
+EOF
+java -jar gslint.jar --include src/ --additional-jars-file /tmp/dependencies.txt
+```
+
+### All flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--rules <list>` | Comma-separated rule tokens (or fully-qualified class names) to run. Supports glob patterns: `manifold*`, `*expansion*` | All rules |
+| `--skip-rules <list>` | Comma-separated rule tokens to exclude. Supports glob patterns: `manifold*`, `*expansion*` | - |
+| `--rules-only-custom` | Skip all built-in rules; use only with `--rules` to specify custom rules (incompatible with `--skip-rules`) | `false` |
+| `--enable-experimental-rules` | Enable experimental Manifold-awareness rules | `false` |
+| `--config <file>` | Properties file with rule configuration | - |
+| `--rule-config <str>` | Inline rule configuration (`rule:key=value;rule2:key=value`) | - |
+| `--format <fmt>` | Output format: `text`, `json`, `sarif` | `text` |
+| `--init-src-root <path>` | Source root for Gosu runtime/type resolution. Required to properly resolve types and package structures. Can be specified multiple times for multiple roots. | - |
+| `--additional-jars-file <file>` | JAR paths for type resolution (one per line or semicolon-separated) | - |
+| `--include-generated` | Analyze `@Generated` classes (skipped by default) | `false` |
+| `--show-progress` | Print progress every ~10% of files and a final summary | `false` |
+| `--log-level <level>` | Logger level: `SEVERE`, `WARNING`, `INFO`, `FINE`, `FINER`, `FINEST` | `INFO` |
+| `--help` | Print usage and exit | - |
+
+## Extending with Custom Rules
+
+If you work on a platform built using Gosu and need additional rules you can write those rules yourself and load them alongside the built-in ones.
+
+Add `gslint.jar` to your compile classpath, extend `BaseRule<V extends Violation>`, annotate the class with `@RuleToken`, and package your rules into a separate JAR.
+
+The runner distinguishes built-in tokens from custom class names by the presence of a `.` - anything containing a `.` is treated as a fully-qualified class name and loaded via reflection.
+
+```bash
+# Custom rule only (skip all built-ins explicitly)
+java -jar gslint.jar --init-src-root src \
+  --rules com.example.rules.MyRule \
+  --rules-only-custom
+
+# Mix built-in tokens and custom class names freely
+java -jar gslint.jar --init-src-root src \
+  --rules "empty-catch,com.example.rules.MyRule,dead-assignment"
+
+# --skip-rules works the same way
+java -jar gslint.jar --init-src-root src \
+  --skip-rules com.example.rules.MyRule
+
+# Custom rule with configuration
+java -jar gslint.jar --init-src-root src \
+  --rules com.example.rules.MyRule \
+  --rules-only-custom \
+  --rule-config "com.example.rules.MyRule:threshold=5"
+```
+
+Your JAR must be on the classpath at runtime. Use `-cp` or merge it with the uber JAR at build time:
+
+```bash
+# Unix: colon-separated classpath
+java -cp "gslint.jar:my-rules.jar" org.gslint.Main \
+  --src-root src --rules com.example.rules.MyRule
+
+# Windows: semicolon-separated classpath
+java -cp "gslint.jar;my-rules.jar" org.gslint.Main \
+  --src-root src --rules com.example.rules.MyRule
+
+# With explicit gosu JARs (no uber JAR)
+java -cp "gslint.jar:/lib/gosu-core-1.18.7.jar:gosu-core-api-1.18.7.jar:<other jars>:my-rules.jar" \
+  org.gslint.Main \
+  --src-root src --rules com.example.rules.MyRule
+```
+
+## Notes
+
+- Portions of this project were generated with the assistance of coding agents
