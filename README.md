@@ -2,11 +2,19 @@
 
 Source-level static analysis for the [Gosu](https://gosu-lang.github.io/) programming language. Parses `.gs`, `.gsx`, `.gst`, and `.gsp` source files using the Gosu compiler's own AST API (`gw.lang.parser.*`) and reports violations in Text, JSON, SARIF.
 
-- Tested Gosu versions: 1.14.16, 1.14.29, 1.15.7, 1.17.13, 1.18.5, **1.18.7**, 1.18.8
+- Tested Gosu versions: 1.14.16, 1.14.29, 1.15.7, 1.17.13, 1.18.5, **1.18.7**, 1.18.8, 1.18.12
 - Gosu has been a stable language for over a decade so there should be flexibility with running a linter built for **1.18.7** against files designed for a previous version
 - Targets Java 11 bytecode for gosu-core parity; usable on JDK 11, 17, 21; peeked at upcoming 1.20.0-SNAPSHOT (JDK 25)
 
-> **Rule philosophy:** This project ships a curated set of language-level rules. It serves as a foundational component for larger code quality efforts and will not reach feature parity with general-purpose linters. If you're building a Gosu framework or application platform, write custom rules targeting your domain APIs.
+## Rule Philosophy
+
+> This project ships a curated set of language-level rules. It serves as a foundational component for larger code quality efforts and will not reach feature parity with general-purpose linters. If you're building a Gosu framework or application platform, write custom rules targeting your domain APIs.
+
+## Other Commands
+
+`lint` is the default and primary command, and the focus of this README. The same JAR also ships risk scoring (`quality`), clone detection (`duplicate`), and several other analysis and diagnostic commands. See [COMMANDS.md](COMMANDS.md) for the full list.
+
+A companion viewer app lets you load a `lint --format json` report to explore and filter violations (group by file or rule, filter by severity/rule token), or a `quality --format json` report to interactively re-weight risk factors - no build step, no server. The easiest way to use it is to download the standalone, single-file `gslint-<version>-viewer.html` from a release and open it in your browser. If you have cloned the repo, you can instead open `viewer/index.html` locally.
 
 ## How It Works
 
@@ -90,7 +98,7 @@ Individual violations are flagged with `[⚠ type-incomplete]` in text output an
 
 ## Rule Reference
 
-See [RULES.md](RULES.md) for a comprehensive reference of all 150+ linting rules. For complexity metrics (cyclomatic and cognitive complexity), see [COMPLEXITY.md](COMPLEXITY.md).
+See [RULES.md](RULES.md) for a comprehensive reference of all 170+ linting rules. For complexity metrics (cyclomatic and cognitive complexity), see [COMPLEXITY.md](COMPLEXITY.md).
 
 ## Command-Line Usage
 
@@ -122,6 +130,19 @@ java -jar gslint.jar --include "src/**/*.gs" --src-root src
 java -jar gslint.jar --include "src\**\*.gs" --src-root src
 ```
 
+### Wildcards in option values (Windows)
+
+On Windows, `java.exe` itself expands any argument containing `*` into the names of matching files in the current folder before gslint starts, and quoting does not prevent it. So `--rules "manifold*"` or `--enable-rules "redundant-*"` silently breaks when a file with a matching name sits in the folder you run from, and a bare `*` always does. (On Linux and macOS only the shell expands, so quoting the pattern is enough.) To pass a wildcard through untouched, put the options in an argument file, one token per line, and run `java -jar gslint.jar @args.txt`:
+
+```text
+--include
+src
+--init-src-root
+src
+--enable-rules
+*
+```
+
 ### Running without the uber JAR
 
 When you want to avoid the uber JAR - for example, when embedding the linter in a larger build that already has gosu-core on the classpath - use `-cp` to assemble the classpath yourself:
@@ -133,6 +154,24 @@ java -cp "gslint.jar:gosu-core-1.18.7.jar:gosu-core-api-1.18.7.jar:<other jars>:
 # Windows (semicolon separators)
 java -cp "gslint.jar;gosu-core-1.18.7.jar;gosu-core-api-1.18.7.jar;<other jars>;lib/myapp.jar" org.gslint.Main --include src --src-root src
 ```
+
+#### A note on licensing when you build the classpath yourself
+
+The two ways of running gslint differ in who ships the third-party code:
+
+- **Uber JAR:** gslint's dependencies (gosu-core / gosu-core-api, and transitively
+  ASM, JCommander, and Manifold) are shaded directly into the single runnable JAR.
+  Their copyright and license notices travel with it in `META-INF/NOTICE` and
+  `META-INF/LICENSE`.
+- **Thin `gslint-<version>.jar` on a classpath you assemble:** those same components
+  are *not* inside the gslint JAR. Your build resolves them as separate JARs, so if
+  you redistribute your assembled application, **you** are the one distributing
+  gosu-core, ASM (BSD-3-Clause), JCommander (Apache-2.0), and Manifold (Apache-2.0),
+  and their attribution requirements fall to you. See `NOTICE` in this repository
+  for the per-component copyright and license notices to carry forward.
+
+Either way the underlying licenses are the same; the only difference is which JAR
+physically contains the classes and therefore who is responsible for the notices.
 
 ### Rule selection
 
@@ -158,6 +197,9 @@ java -jar gslint.jar --include src --format json
 
 # SARIF - for GitHub Code Scanning, VS Code, and other SARIF consumers
 java -jar gslint.jar --include src --format sarif
+
+# Markdown - a PR-summary comment for GitHub or Bitbucket
+java -jar gslint.jar --include src --format markdown > out.md
 ```
 
 The linter's output goes to `stdout`, so pipe it into a file (`... > report.txt`) or into another processor such as `jq` when you need structured filtering or CI artifact capture.
@@ -292,11 +334,12 @@ java -jar gslint.jar --include src/ --additional-jars-file /tmp/dependencies.txt
 |------|-------------|---------|
 | `--rules <list>` | Comma-separated rule tokens (or fully-qualified class names) to run. Supports glob patterns: `manifold*`, `*expansion*` | All rules |
 | `--skip-rules <list>` | Comma-separated rule tokens to exclude. Supports glob patterns: `manifold*`, `*expansion*` | - |
+| `--enable-rules <list>` | Comma-separated rule tokens (globs allowed) to switch on even if disabled by default; combine with `--skip-rules` (a rule in both stays skipped) | - |
 | `--rules-only-custom` | Skip all built-in rules; use only with `--rules` to specify custom rules (incompatible with `--skip-rules`) | `false` |
 | `--enable-experimental-rules` | Enable experimental Manifold-awareness rules | `false` |
 | `--config <file>` | Properties file with rule configuration | - |
 | `--rule-config <str>` | Inline rule configuration (`rule:key=value;rule2:key=value`) | - |
-| `--format <fmt>` | Output format: `text`, `json`, `sarif` | `text` |
+| `--format <fmt>` | Output format: `text`, `json`, `sarif`, `intellij` (alias `idea`), `markdown` (alias `md`) | `text` |
 | `--init-src-root <path>` | Source root for Gosu runtime/type resolution. Required to properly resolve types and package structures. Can be specified multiple times for multiple roots. | - |
 | `--additional-jars-file <file>` | JAR paths for type resolution (one per line or semicolon-separated) | - |
 | `--include-generated` | Analyze `@Generated` classes (skipped by default) | `false` |
