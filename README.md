@@ -98,7 +98,7 @@ Individual violations are flagged with `[⚠ type-incomplete]` in text output an
 
 ## Rule Reference
 
-See [RULES.md](RULES.md) for a comprehensive reference of all 170+ linting rules. For complexity metrics (cyclomatic and cognitive complexity), see [COMPLEXITY.md](COMPLEXITY.md).
+See [RULES.md](RULES.md) for a comprehensive reference of all 185+ linting rules. For complexity metrics (cyclomatic and cognitive complexity), see [COMPLEXITY.md](COMPLEXITY.md).
 
 ## Command-Line Usage
 
